@@ -3,6 +3,7 @@
  */
 
 #include "CaptureModeModel.h"
+#include "MonitorCapture.h"
 #include "ShortcutActions.h"
 #include "SpectacleCore.h"
 
@@ -53,6 +54,9 @@ CaptureModeModel::CaptureModeModel(QObject *parent)
     connect(platform, &ImagePlatform::supportedGrabModesChanged, this, [this, platform]() {
         setGrabModes(platform->supportedGrabModes());
     });
+    connect(platform, &ImagePlatform::stereoActiveChanged, this, [this, platform] {
+        setGrabModes(platform->supportedGrabModes());
+    });
     setGrabModes(platform->supportedGrabModes());
 }
 
@@ -98,11 +102,14 @@ int CaptureModeModel::indexOfCaptureMode(CaptureMode captureMode) const
 
 void CaptureModeModel::setGrabModes(ImagePlatform::GrabModes modes)
 {
-    if (m_grabModes == modes) {
+    const bool stereoActive = SpectacleCore::instance()->imagePlatform()->stereoActive();
+    if (m_grabModes == modes && m_stereoActive == stereoActive) {
         return;
     }
     m_grabModes = modes;
+    m_stereoActive = stereoActive;
     const int oldCount = m_data.size();
+    beginResetModel();
     m_data.clear();
 
     const bool hasCurrentScreen = m_grabModes.testFlag(ImagePlatform::GrabMode::CurrentScreen);
@@ -117,9 +124,13 @@ void CaptureModeModel::setGrabModes(ImagePlatform::GrabModes modes)
     if (m_grabModes.testFlag(ImagePlatform::GrabMode::AllScreens)) {
         m_data.append({
             CaptureModeModel::AllScreens,
-            captureModeLabel(hasCurrentScreen ? CaptureMode::AllScreens : CaptureMode::FullScreen),
+            m_stereoActive ? monitorModeLabel(MonitorCapture::AllMonitors2D)
+                           : captureModeLabel(hasCurrentScreen ? CaptureMode::AllScreens : CaptureMode::FullScreen),
             actionShortcutsToString(ShortcutActions::self()->fullScreenAction()),
         });
+    }
+    if (m_stereoActive && modes.testFlag(ImagePlatform::AllScreensStereo)) {
+        m_data.append({CaptureMode::AllScreensStereo, monitorModeLabel(MonitorCapture::AllMonitors3D)});
     }
     if (m_grabModes.testFlag(ImagePlatform::GrabMode::AllScreensScaled)) {
         m_data.append({
@@ -130,9 +141,12 @@ void CaptureModeModel::setGrabModes(ImagePlatform::GrabModes modes)
     if (hasCurrentScreen) {
         m_data.append({
             CaptureModeModel::CurrentScreen,
-            captureModeLabel(CaptureModeModel::CurrentScreen),
+            m_stereoActive ? monitorModeLabel(MonitorCapture::ThisMonitor2D) : captureModeLabel(CaptureModeModel::CurrentScreen),
             actionShortcutsToString(ShortcutActions::self()->currentScreenAction()),
         });
+    }
+    if (m_stereoActive && modes.testFlag(ImagePlatform::CurrentScreenStereo)) {
+        m_data.append({CaptureMode::CurrentScreenStereo, monitorModeLabel(MonitorCapture::ThisMonitor3D)});
     }
     if (m_grabModes.testFlag(ImagePlatform::GrabMode::ActiveWindow)) {
         m_data.append({
@@ -149,6 +163,7 @@ void CaptureModeModel::setGrabModes(ImagePlatform::GrabModes modes)
         });
     }
 
+    endResetModel();
     Q_EMIT captureModesChanged();
     if (oldCount != m_data.size()) {
         Q_EMIT countChanged();
@@ -174,8 +189,27 @@ QString CaptureModeModel::captureModeLabel(CaptureMode mode)
         return i18nc("@action in capture mode section", "All Screens");
     case CaptureMode::FullScreen:
         return i18nc("@action in capture mode section", "Full Screen");
+    case CaptureMode::AllScreensStereo:
+        return monitorModeLabel(MonitorCapture::AllMonitors3D);
+    case CaptureMode::CurrentScreenStereo:
+        return monitorModeLabel(MonitorCapture::ThisMonitor3D);
     }
     return QString{};
+}
+
+QString CaptureModeModel::monitorModeLabel(int mode)
+{
+    switch (mode) {
+    case MonitorCapture::AllMonitors2D:
+        return i18nc("@action in capture mode section", "All Monitors 2D");
+    case MonitorCapture::AllMonitors3D:
+        return i18nc("@action in capture mode section", "All Monitors 3D");
+    case MonitorCapture::ThisMonitor2D:
+        return i18nc("@action in capture mode section", "This Monitor 2D");
+    case MonitorCapture::ThisMonitor3D:
+        return i18nc("@action in capture mode section", "This Monitor 3D");
+    }
+    return {};
 }
 
 #include "moc_CaptureModeModel.cpp"

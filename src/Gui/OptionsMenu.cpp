@@ -79,6 +79,30 @@ OptionsMenu::OptionsMenu(QWidget *parent)
         });
     }
 
+    auto monitorMenu = addMenu(i18nc("@title:menu", "Captured Monitors"));
+    auto monitorGroup = new QActionGroup(monitorMenu);
+    const auto core = SpectacleCore::instance();
+    auto updateMonitorMenu = [core, monitorMenu] {
+        monitorMenu->menuAction()->setVisible(core->monitorCapture().hasStereo());
+    };
+    updateMonitorMenu();
+    connect(core, &SpectacleCore::monitorCaptureChanged, monitorMenu, updateMonitorMenu);
+    for (auto mode : {MonitorCapture::AllMonitors2D, MonitorCapture::AllMonitors3D, MonitorCapture::ThisMonitor2D, MonitorCapture::ThisMonitor3D}) {
+        auto action = monitorMenu->addAction(CaptureModeModel::monitorModeLabel(mode));
+        monitorGroup->addAction(action);
+        action->setCheckable(true);
+        auto update = [core, action, mode] {
+            action->setEnabled(core->monitorCapture().supports(mode));
+            action->setChecked(core->monitorCaptureMode() == mode);
+        };
+        update();
+        connect(core, &SpectacleCore::monitorCaptureChanged, action, update);
+        connect(action, &QAction::triggered, this, [core, mode, update] {
+            core->setMonitorCaptureMode(mode);
+            update();
+        });
+    }
+
     auto eyeMenu = addMenu(i18nc("@title:menu Eye used when exporting a stereo capture to a 2D format", "Eye for 2D Export"));
     auto eyeGroup = new QActionGroup(eyeMenu);
     for (const auto eye : {Settings::LeftEye, Settings::RightEye}) {

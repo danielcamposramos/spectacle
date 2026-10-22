@@ -16,6 +16,7 @@
 #include "ExportManager.h"
 #include "Gui/CaptureWindow.h"
 #include "Gui/ViewerWindow.h"
+#include "MonitorCapture.h"
 #include "OcrManager.h"
 #include "Platforms/PlatformLoader.h"
 #include "RecordingModeModel.h"
@@ -86,6 +87,15 @@ public:
     void initGuiNoScreenshot();
 
     void syncExportImage();
+    const MonitorCapture &monitorCapture() const
+    {
+        return m_monitorCapture;
+    }
+    MonitorCapture::Mode monitorCaptureMode() const
+    {
+        return m_monitorCaptureMode;
+    }
+    void setMonitorCaptureMode(MonitorCapture::Mode mode);
 
     Q_INVOKABLE void startRecording(VideoPlatform::RecordingMode mode, bool withPointer = Settings::videoIncludePointer());
     Q_INVOKABLE void finishRecording();
@@ -128,6 +138,7 @@ public Q_SLOTS:
     void showErrorMessage(const QString &message);
 
 Q_SIGNALS:
+    void monitorCaptureChanged();
     void screenCaptureUrlChanged();
     void captureTimeRemainingChanged();
     void captureProgressChanged();
@@ -190,6 +201,8 @@ private:
 
     QUrl m_editExistingUrl;
     QUrl m_outputUrl;
+    MonitorCapture m_monitorCapture;
+    MonitorCapture::Mode m_monitorCaptureMode = MonitorCapture::AllMonitors2D;
 
     ImagePlatform::GrabMode m_lastGrabMode = ImagePlatform::GrabMode::NoGrabModes;
     bool m_lastIncludePointer = false; // cli default value

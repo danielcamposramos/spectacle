@@ -42,6 +42,8 @@ public:
         ActiveWindow,
         WindowUnderCursor,
         FullScreen,
+        AllScreensStereo,
+        CurrentScreenStereo,
     };
     Q_ENUM(CaptureMode)
 
@@ -59,6 +61,7 @@ public:
     void setGrabModes(ImagePlatform::GrabModes modes);
 
     static QString captureModeLabel(CaptureMode mode);
+    static QString monitorModeLabel(int mode);
 
 Q_SIGNALS:
     void captureModesChanged();
@@ -74,4 +77,5 @@ private:
     QList<Item> m_data;
     QHash<int, QByteArray> m_roleNames;
     ImagePlatform::GrabModes m_grabModes;
+    bool m_stereoActive = false;
 };

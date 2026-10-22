@@ -25,6 +25,7 @@ target_sources(spectacle PRIVATE
     CommandLineOptions.cpp
     ExportManager.cpp
     Geometry.cpp
+    MonitorCapture.cpp
     OcrManager.cpp
     Gui/CaptureWindow.cpp
     Gui/ExportMenu.cpp
@@ -85,6 +86,10 @@ qt6_generate_wayland_protocol_client_sources(spectacle
 
 if(PURPOSE_FOUND)
     target_link_libraries(spectacle PRIVATE KF6::PurposeWidgets)
+endif()
+
+if(StereoLayer_FOUND)
+    target_link_libraries(spectacle PRIVATE Stereo::Layer)
 endif()
 
 ki18n_wrap_ui(spectacle

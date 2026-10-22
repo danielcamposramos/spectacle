@@ -74,6 +74,7 @@ public Q_SLOTS:
 
 private Q_SLOTS:
     void updateSupportedGrabModes();
+    void updateStereoOutputs();
 
 private:
     void takeScreenShotInteractive(InteractiveKind kind, ScreenShotFlags flags);
@@ -82,6 +83,7 @@ private:
     void takeScreenShotActiveScreen(ScreenShotFlags flags);
     void takeScreenShotScreens(const QList<QScreen *> &screens, ScreenShotFlags flags);
     void takeScreenShotWorkspace(ScreenShotFlags flags);
+    void takeMonitorScreenShots(ScreenShotFlags flags, bool currentScreen, bool stereo);
     void takeScreenShotCroppable(ScreenShotFlags flags);
 
     void trackSource(ScreenShotSource2 *source);
@@ -90,6 +92,7 @@ private:
 
     int m_apiVersion = 1;
     GrabModes m_grabModes;
+    bool m_capturedStereo = false;
 };
 
 /**
@@ -188,6 +191,7 @@ Q_SIGNALS:
 
 private:
     QList<ResultVariant> m_results;
+    qsizetype m_finished = 0;
 };
 
 /**

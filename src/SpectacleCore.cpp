@@ -192,7 +192,7 @@ SpectacleCore::SpectacleCore(QObject *parent)
         }
     }, Qt::QueuedConnection);
 
-    connect(imagePlatform, &ImagePlatform::newScreenshotTaken, this, [this](const QImage &image){
+    auto onScreenshot = [this](const QImage &image) {
         InlineMessageModel::instance()->clear();
         m_annotationDocument->clearAnnotations();
         m_annotationDocument->setBaseImage(image);
@@ -204,8 +204,42 @@ SpectacleCore::SpectacleCore(QObject *parent)
         ExportManager::instance()->scanQRCode();
         ExportManager::instance()->exportImage(autoExportActions(), outputUrl());
         setVideoMode(false);
+    };
+    connect(imagePlatform, &ImagePlatform::newScreenshotTaken, this, [this, onScreenshot](const QImage &image) {
+        m_monitorCapture = {};
+        Q_EMIT monitorCaptureChanged();
+        onScreenshot(image);
+    });
+    connect(imagePlatform, &ImagePlatform::monitorScreenshotTaken, this, [this, onScreenshot](const QList<QImage> &monitors, const QImage &current) {
+        MonitorCapture capture{monitors, current};
+        const auto mode = m_lastGrabMode == ImagePlatform::AllScreensStereo ? MonitorCapture::AllMonitors3D
+            : m_lastGrabMode == ImagePlatform::CurrentScreenStereo          ? MonitorCapture::ThisMonitor3D
+            : m_lastGrabMode == ImagePlatform::CurrentScreen                ? MonitorCapture::ThisMonitor2D
+                                                                            : MonitorCapture::AllMonitors2D;
+        const auto image = capture.image(mode, Settings::stereoExportEye() == Settings::RightEye);
+        if (image.isNull()) {
+            Q_EMIT this->imagePlatform()->newScreenshotFailed(i18nc("@info", "The selected monitor capture has no stereo image."));
+            return;
+        }
+        m_monitorCapture = capture;
+        m_monitorCaptureMode = mode;
+        Q_EMIT monitorCaptureChanged();
+        onScreenshot(image);
+    });
+    connect(Settings::self(), &Settings::stereoExportEyeChanged, this, [this] {
+        if (m_monitorCapture.supports(m_monitorCaptureMode)
+            && (m_monitorCaptureMode == MonitorCapture::AllMonitors2D || m_monitorCaptureMode == MonitorCapture::ThisMonitor2D)) {
+            const auto image = m_monitorCapture.image(m_monitorCaptureMode, Settings::stereoExportEye() == Settings::RightEye);
+            m_annotationDocument->setBaseImage(image);
+            auto rendered = m_annotationDocument->renderToImage();
+            ImageMetaData::copy(rendered, image);
+            setExportImage(rendered);
+            SpectacleWindow::setTitleForAll(SpectacleWindow::Unsaved);
+        }
     });
     connect(imagePlatform, &ImagePlatform::newCroppableScreenshotTaken, this, [this](const QImage &image) {
+        m_monitorCapture = {};
+        Q_EMIT monitorCaptureChanged();
         InlineMessageModel::instance()->clear();
         setVideoMode(false);
         m_annotationDocument->clearAnnotations();
@@ -677,6 +711,7 @@ SpectacleCore::SpectacleCore(QObject *parent)
     connect(m_annotationSyncTimer.get(), &QTimer::timeout, this, [this] {
         auto image = m_annotationDocument->renderToImage();
         auto canvasPos = m_annotationDocument->canvasRect().topLeft();
+        ImageMetaData::copy(image, m_annotationDocument->baseImage());
         ImageMetaData::setLogicalXY(image, canvasPos.x(), canvasPos.y());
         ExportManager::instance()->setImage(image);
     }, Qt::QueuedConnection); // QueuedConnection to help prevent making the visible render lag.
@@ -986,6 +1021,8 @@ void SpectacleCore::activate(const QStringList &arguments, const QString &workin
             // This QImage constructor only works with local files or Qt resource file names.
             QImage existingImage(existingLocalFile);
             m_annotationDocument->clearAnnotations();
+            m_monitorCapture = {};
+            Q_EMIT monitorCaptureChanged();
             m_annotationDocument->setBaseImage(existingImage);
             m_returnToViewer = true;
             showViewerIfGuiMode();
@@ -1017,7 +1054,30 @@ void SpectacleCore::activate(const QStringList &arguments, const QString &workin
     // Determine grab mode
     using CaptureMode = CaptureModeModel::CaptureMode;
     using GrabMode = ImagePlatform::GrabMode;
+    std::optional<GrabMode> monitorMode;
+    if (m_cliOptions[Option::MonitorMode]) {
+        const auto mode = parser.value(CommandLineOptions::self()->monitorMode);
+        if (mode == u"all-2d") {
+            monitorMode = GrabMode::AllScreens;
+        } else if (mode == u"all-3d") {
+            monitorMode = GrabMode::AllScreensStereo;
+        } else if (mode == u"current-2d") {
+            monitorMode = GrabMode::CurrentScreen;
+        } else if (mode == u"current-3d") {
+            monitorMode = GrabMode::CurrentScreenStereo;
+        }
+        if (!monitorMode
+            || (!m_imagePlatform->supportedGrabModes().testFlag(*monitorMode)
+                && !(*monitorMode == GrabMode::CurrentScreen && m_imagePlatform->supportedGrabModes().testFlag(GrabMode::CurrentScreenStereo)))) {
+            showErrorMessage(i18nc("@info:shell", "The monitor capture mode is invalid or unavailable: %1", mode));
+            Q_EMIT allDone();
+            return;
+        }
+    }
     auto cliGrabMode = [&]() -> std::optional<GrabMode> {
+        if (monitorMode) {
+            return monitorMode;
+        }
         if (m_cliOptions[Option::Fullscreen]) {
             return m_cliOptions[Option::Scaled] ? GrabMode::AllScreensScaled : GrabMode::AllScreens;
         } else if (m_cliOptions[Option::Current]) {
@@ -1088,7 +1148,8 @@ void SpectacleCore::activate(const QStringList &arguments, const QString &workin
         m_cliOptions[Option::WindowUnderCursor] ||
         m_cliOptions[Option::TransientOnly] ||
         m_cliOptions[Option::Region] ||
-        m_cliOptions[Option::Record];
+        m_cliOptions[Option::Record] ||
+        m_cliOptions[Option::MonitorMode];
     // clang-format on
 
     switch (m_startMode) {
@@ -1430,25 +1491,24 @@ ImagePlatform::GrabMode SpectacleCore::toGrabMode(CaptureModeModel::CaptureMode 
     using GrabMode = ImagePlatform::GrabMode;
     using CaptureMode = CaptureModeModel::CaptureMode;
     const auto &supportedGrabModes = m_imagePlatform->supportedGrabModes();
-    if (captureMode == CaptureMode::CurrentScreen
-        && supportedGrabModes.testFlag(ImagePlatform::CurrentScreen)) {
+    if (captureMode == CaptureMode::AllScreensStereo && supportedGrabModes.testFlag(GrabMode::AllScreensStereo)) {
+        return GrabMode::AllScreensStereo;
+    } else if (captureMode == CaptureMode::CurrentScreenStereo && supportedGrabModes.testFlag(GrabMode::CurrentScreenStereo)) {
+        return GrabMode::CurrentScreenStereo;
+    } else if (captureMode == CaptureMode::CurrentScreen && supportedGrabModes.testFlag(ImagePlatform::CurrentScreen)) {
         return GrabMode::CurrentScreen;
-    } else if (captureMode == CaptureMode::ActiveWindow
-        && supportedGrabModes.testFlag(ImagePlatform::ActiveWindow)) {
+    } else if (captureMode == CaptureMode::ActiveWindow && supportedGrabModes.testFlag(ImagePlatform::ActiveWindow)) {
         return GrabMode::ActiveWindow;
-    } else if (captureMode == CaptureMode::WindowUnderCursor
-        && supportedGrabModes.testFlag(ImagePlatform::WindowUnderCursor)) {
+    } else if (captureMode == CaptureMode::WindowUnderCursor && supportedGrabModes.testFlag(ImagePlatform::WindowUnderCursor)) {
         // TODO: Improve API for transientOnly or make it obsolete.
         if (transientOnly || !supportedGrabModes.testFlag(ImagePlatform::TransientWithParent)) {
             return GrabMode::WindowUnderCursor;
         } else {
             return GrabMode::TransientWithParent;
         }
-    } else if (captureMode == CaptureMode::RectangularRegion
-        && supportedGrabModes.testFlag(ImagePlatform::PerScreenImageNative)) {
+    } else if (captureMode == CaptureMode::RectangularRegion && supportedGrabModes.testFlag(ImagePlatform::PerScreenImageNative)) {
         return GrabMode::PerScreenImageNative;
-    } else if (captureMode == CaptureMode::AllScreensScaled
-        && supportedGrabModes.testFlag(ImagePlatform::AllScreensScaled)) {
+    } else if (captureMode == CaptureMode::AllScreensScaled && supportedGrabModes.testFlag(ImagePlatform::AllScreensScaled)) {
         return GrabMode::AllScreensScaled;
     } else if (supportedGrabModes.testFlag(ImagePlatform::AllScreens)) { // default if supported
         return GrabMode::AllScreens;
@@ -1461,7 +1521,11 @@ CaptureModeModel::CaptureMode SpectacleCore::toCaptureMode(ImagePlatform::GrabMo
 {
     using GrabMode = ImagePlatform::GrabMode;
     using CaptureMode = CaptureModeModel::CaptureMode;
-    if (grabMode == GrabMode::CurrentScreen) {
+    if (grabMode == GrabMode::AllScreensStereo) {
+        return CaptureMode::AllScreensStereo;
+    } else if (grabMode == GrabMode::CurrentScreenStereo) {
+        return CaptureMode::CurrentScreenStereo;
+    } else if (grabMode == GrabMode::CurrentScreen) {
         return CaptureMode::CurrentScreen;
     } else if (grabMode == GrabMode::ActiveWindow) {
         return CaptureMode::ActiveWindow;
@@ -1492,6 +1556,27 @@ void SpectacleCore::initGuiNoScreenshot()
 }
 
 // Hurry up the sync if the sync timer is active.
+void SpectacleCore::setMonitorCaptureMode(MonitorCapture::Mode mode)
+{
+    if (m_monitorCaptureMode == mode || !m_monitorCapture.supports(mode)) {
+        return;
+    }
+    if (m_annotationDocument->undoStackDepth() > 0
+        && KMessageBox::warningContinueCancel(nullptr,
+                                              i18nc("@info", "Changing the monitor view clears the current annotations."),
+                                              i18nc("@title:window", "Change Monitor View"))
+            != KMessageBox::Continue) {
+        return;
+    }
+    m_annotationDocument->clearAnnotations();
+    m_monitorCaptureMode = mode;
+    const auto image = m_monitorCapture.image(mode, Settings::stereoExportEye() == Settings::RightEye);
+    m_annotationDocument->setBaseImage(image);
+    setExportImage(image);
+    SpectacleWindow::setTitleForAll(SpectacleWindow::Unsaved);
+    Q_EMIT monitorCaptureChanged();
+}
+
 void SpectacleCore::syncExportImage()
 {
     if (!m_annotationSyncTimer->isActive()) {
@@ -1499,8 +1584,8 @@ void SpectacleCore::syncExportImage()
     }
     auto image = m_annotationDocument->renderToImage();
     auto canvasPos = m_annotationDocument->canvasRect().topLeft();
+    ImageMetaData::copy(image, m_annotationDocument->baseImage());
     ImageMetaData::setLogicalXY(image, canvasPos.x(), canvasPos.y());
-    ImageMetaData::setStereo(image, ImageMetaData::isStereo(m_annotationDocument->baseImage()));
     setExportImage(image);
 }
 

@@ -111,6 +111,7 @@ set_package_properties(KQuickImageEditor PROPERTIES
 pkg_check_modules(TESSERACT REQUIRED IMPORTED_TARGET tesseract)
 
 # optional components
+find_package(StereoLayer 1.10 QUIET)
 find_package(KF6DocTools ${KF6_MIN_VERSION})
 set_package_properties(KF6DocTools PROPERTIES DESCRIPTION
     "Tools to generate documentation"

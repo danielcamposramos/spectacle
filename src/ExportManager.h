@@ -153,6 +153,7 @@ private:
     QString imageFileSuffix(const QUrl &url) const;
     QImage imageForExport(const QByteArray &suffix) const;
     bool writeImage(QIODevice *device, const QByteArray &suffix);
+    bool checkImageFormat(const QByteArray &suffix);
     bool save(const QUrl &url);
     bool localSave(const QUrl &url, const QString &suffix);
     bool remoteSave(const QUrl &url, const QString &suffix);

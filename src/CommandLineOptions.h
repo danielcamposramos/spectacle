@@ -114,11 +114,16 @@ struct CommandLineOptions {
         u"existingFileName"_s
     };
     const QCommandLineOption releaseCapture = {{u"k"_s, u"release-capture"_s}, i18n("Accept region selection on click-and-release")};
+    const QCommandLineOption monitorMode = {
+        {u"monitor-mode"_s},
+        i18n("Capture monitors using all-2d, all-3d, current-2d, or current-3d"),
+        u"mode"_s,
+    };
 
     const QList<QCommandLineOption> allOptions = {
-        fullscreen, scaled,      current,      activeWindow, windowUnderCursor, transientOnly, region,       record,         launchOnly,
-        gui,        background,  dbus,         noNotify,     output,            delay,         copyImage,    copyPath,
-        onClick,    newInstance, pointer,      noDecoration, noShadow,          editExisting,  releaseCapture,
+        fullscreen,   scaled,         current,     activeWindow, windowUnderCursor, transientOnly, region,  record,      launchOnly, gui,          background,
+        dbus,         noNotify,       output,      delay,        copyImage,         copyPath,      onClick, newInstance, pointer,    noDecoration, noShadow,
+        editExisting, releaseCapture, monitorMode,
     };
 
     // Keep order in sync with allOptions
@@ -147,6 +152,7 @@ struct CommandLineOptions {
         NoShadow,
         EditExisting,
         ReleaseCapture,
+        MonitorMode,
         TotalOptions
     };
 };

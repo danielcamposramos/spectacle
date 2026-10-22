@@ -476,6 +476,9 @@ QImage ExportManager::imageForExport(const QByteArray &suffix) const
 
 bool ExportManager::writeImage(QIODevice *device, const QByteArray &suffix)
 {
+    if (!checkImageFormat(suffix)) {
+        return false;
+    }
     // In the documentation for QImageWriter, it is a bit ambiguous what "format" means.
     // From looking at how QImageWriter handles the built-in supported formats internally,
     // "format" basically means the file extension, not the mimetype.
@@ -503,6 +506,16 @@ bool ExportManager::writeImage(QIODevice *device, const QByteArray &suffix)
     // This is done here because we need the highest resolution version in the rest of the app.
     if (!imageWriter.write(imageForExport(suffix))) {
         Q_EMIT errorMessage(i18nc("%1 is an error message", "QImageWriter cannot write image: %1", imageWriter.errorString()));
+        return false;
+    }
+    return true;
+}
+
+bool ExportManager::checkImageFormat(const QByteArray &suffix)
+{
+    if ((ImageMetaData::isMonitorPanorama(m_saveImage) || m_saveImage.text(u"Stereo3DLayout"_s) == u"mono") && (suffix == "jps" || suffix == "mpo")) {
+        Q_EMIT errorMessage(
+            i18nc("@info", "This capture is a 2D picture. Choose an ordinary image format, or select This Monitor 3D to save one stereo pair."));
         return false;
     }
     return true;
@@ -617,6 +630,9 @@ bool ExportManager::save(const QUrl &url)
     }
 
     const QString suffix = imageFileSuffix(url);
+    if (!checkImageFormat(suffix.toLatin1())) {
+        return false;
+    }
     bool saveSucceded = false;
     if (url.isLocalFile()) {
         saveSucceded = localSave(url, suffix);
@@ -667,6 +683,10 @@ void ExportManager::exportImage(ExportManager::Actions actions, QUrl url)
         const auto mimeTypes = QImageWriter::supportedMimeTypes();
         supportedFilters.reserve(mimeTypes.count());
         for (const auto &mimeType : mimeTypes) {
+            if ((ImageMetaData::isMonitorPanorama(m_saveImage) || m_saveImage.text(u"Stereo3DLayout"_s) == u"mono")
+                && (mimeType == "image/x-jps" || mimeType == "image/mpo" || mimeType == "image/x-mpo")) {
+                continue;
+            }
             supportedFilters.append(QString::fromUtf8(mimeType).trimmed());
         }
 

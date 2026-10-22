@@ -23,6 +23,7 @@
 
 #include "ExportManager.h"
 #include "ImageMetaData.h"
+#include "MonitorCapture.h"
 
 using namespace Qt::StringLiterals;
 
@@ -57,6 +58,9 @@ private Q_SLOTS:
     void testJpsPluginWriter();
     void testMpoPluginWriter();
     void testFlatWriter();
+    void testMonitorCapture_data();
+    void testMonitorCapture();
+    void testPanoramaStereoSave();
 };
 
 void FilenameTest::initTestCase()
@@ -422,6 +426,119 @@ void FilenameTest::testFlatWriter()
     output.close();
 
     QCOMPARE(QImage::fromData(output.buffer(), "png"), image);
+}
+
+void FilenameTest::testMonitorCapture_data()
+{
+    QTest::addColumn<int>("mode");
+    QTest::addColumn<bool>("right");
+    for (int mode = 0; mode < 4; ++mode) {
+        for (bool right : {false, true}) {
+            QTest::newRow(qPrintable(QString::number(mode) + (right ? u"-right"_s : u"-left"_s))) << mode << right;
+        }
+    }
+}
+
+void FilenameTest::testMonitorCapture()
+{
+    QFETCH(int, mode);
+    QFETCH(bool, right);
+    const auto source = [](int width, int height, qreal dpr, qreal x, bool stereo, QColor left, QColor right) {
+        QImage image(width, height, QImage::Format_RGB32);
+        image.fill(left);
+        if (stereo) {
+            QPainter painter(&image);
+            painter.fillRect(width / 2, 0, width / 2, height, right);
+        }
+        image.setDevicePixelRatio(dpr);
+        ImageMetaData::setLogicalXY(image, x, 0);
+        ImageMetaData::setStereo(image, stereo);
+        return image;
+    };
+    auto a = source(20, 10, 1.5, -100, true, Qt::red, Qt::blue);
+    auto b = source(8, 6, 1, 0, false, Qt::yellow, Qt::yellow);
+    auto c = source(28, 12, 2, 100, true, Qt::green, Qt::cyan);
+    MonitorCapture capture{{c, a, b}, c};
+    const auto selected = MonitorCapture::Mode(mode);
+    QVERIFY(capture.supports(selected));
+    auto image = capture.image(selected, right);
+    QVERIFY(!image.isNull());
+    if (selected == MonitorCapture::AllMonitors2D) {
+        QCOMPARE(image.size(), QSize(32, 12));
+        QCOMPARE(image.pixelColor(0, 0), QColor(right ? Qt::blue : Qt::red));
+        QCOMPARE(image.pixelColor(10, 0), QColor(Qt::yellow));
+        QCOMPARE(image.pixelColor(18, 0), QColor(right ? Qt::cyan : Qt::green));
+        QCOMPARE(image.pixelColor(0, 11).alpha(), 0);
+    } else if (selected == MonitorCapture::AllMonitors3D) {
+        QCOMPARE(image.size(), QSize(48, 12));
+        QCOMPARE(image.pixelColor(0, 0), QColor(Qt::red));
+        QCOMPARE(image.pixelColor(10, 0), QColor(Qt::blue));
+        QCOMPARE(image.pixelColor(20, 0), QColor(Qt::green));
+        QCOMPARE(image.pixelColor(34, 0), QColor(Qt::cyan));
+    } else if (selected == MonitorCapture::ThisMonitor2D) {
+        QCOMPARE(image.size(), QSize(14, 12));
+        QCOMPARE(image.pixelColor(0, 0), QColor(right ? Qt::cyan : Qt::green));
+        QCOMPARE(image.devicePixelRatio(), 2);
+    } else {
+        QCOMPARE(image, c);
+    }
+    const bool panorama = selected == MonitorCapture::AllMonitors2D || selected == MonitorCapture::AllMonitors3D;
+    QCOMPARE(ImageMetaData::isMonitorPanorama(image), panorama);
+    QCOMPARE(ImageMetaData::isStereo(image), selected == MonitorCapture::ThisMonitor3D);
+    if (panorama) {
+        QCOMPARE(image.text(u"Stereo3DLayout"_s), u"mono"_s);
+        QCOMPARE(image.devicePixelRatio(), 1);
+        mExportManager->setImage(image);
+        QByteArray bytes;
+        QBuffer buffer(&bytes);
+        QVERIFY(buffer.open(QIODevice::WriteOnly));
+        QVERIFY(mExportManager->writeImage(&buffer, "png"));
+        const auto decoded = QImage::fromData(bytes, "PNG");
+        QCOMPARE(decoded.size(), image.size());
+        QCOMPARE(decoded.text(u"Stereo3DLayout"_s), u"mono"_s);
+    }
+    capture.currentMonitor = b;
+    QVERIFY(!capture.supports(MonitorCapture::ThisMonitor3D));
+    QVERIFY(capture.image(MonitorCapture::ThisMonitor3D, right).isNull());
+    QCOMPARE(capture.image(MonitorCapture::ThisMonitor2D, right), b);
+    capture.monitors = {b};
+    QVERIFY(!capture.supports(MonitorCapture::AllMonitors3D));
+    QVERIFY(capture.image(MonitorCapture::AllMonitors3D, right).isNull());
+    capture.monitors = {a};
+    const auto singlePanorama = capture.image(MonitorCapture::AllMonitors3D, right);
+    QVERIFY(ImageMetaData::isMonitorPanorama(singlePanorama));
+    QVERIFY(!ImageMetaData::isStereo(singlePanorama));
+    QCOMPARE(singlePanorama.size(), a.size());
+}
+
+void FilenameTest::testPanoramaStereoSave()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    auto image = stereoTestImage();
+    ImageMetaData::setMonitorPanorama(image);
+    mExportManager->setImage(image);
+    for (const auto &suffix : {u"jps"_s, u"mpo"_s}) {
+        const auto path = dir.filePath(u"panorama."_s + suffix);
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("keep existing file");
+        file.close();
+        QSignalSpy errors(mExportManager, &ExportManager::errorMessage);
+        QVERIFY(!mExportManager->save(QUrl::fromLocalFile(path)));
+        QCOMPARE(errors.count(), 1);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(file.readAll(), QByteArray("keep existing file"));
+        file.close();
+        QVERIFY(file.remove());
+        QVERIFY(!mExportManager->save(QUrl::fromLocalFile(path)));
+        QVERIFY(!QFile::exists(path));
+        QByteArray bytes;
+        QBuffer buffer(&bytes);
+        QVERIFY(buffer.open(QIODevice::WriteOnly));
+        QVERIFY(!mExportManager->writeImage(&buffer, suffix.toLatin1()));
+        QVERIFY(bytes.isEmpty());
+    }
 }
 
 QTEST_MAIN(FilenameTest)

@@ -5,11 +5,15 @@
 */
 
 #include "ImagePlatformKWin.h"
+#include "Config.h"
+#include "DebugUtils.h"
 #include "ExportManager.h"
 #include "Geometry.h"
-#include "QtCV.h"
-#include "DebugUtils.h"
 #include "ImageMetaData.h"
+#include "QtCV.h"
+#ifdef StereoLayer_FOUND
+#include <screenmode.h>
+#endif
 
 #include <KWindowSystem>
 
@@ -380,12 +384,13 @@ ScreenShotSourceWorkspace2::ScreenShotSourceWorkspace2(ImagePlatformKWin::Screen
 ScreenShotSourceMeta2::ScreenShotSourceMeta2(const QVector<ScreenShotSource2 *> &sources)
 {
     const auto size = sources.size();
-    m_results.reserve(size); // reserves memory but does not change size
-    for (ScreenShotSource2 *source : sources) {
+    m_results.resize(size);
+    for (qsizetype index = 0; index < size; ++index) {
+        auto source = sources.at(index);
         source->setParent(this);
-        connect(source, &ScreenShotSource2::finished, this, [this, size](const ResultVariant &result) {
-            m_results.emplaceBack(result);
-            if (m_results.size() == size) {
+        connect(source, &ScreenShotSource2::finished, this, [this, size, index](const ResultVariant &result) {
+            m_results[index] = result;
+            if (++m_finished == size) {
                 Q_EMIT finished(m_results);
             }
         });
@@ -409,6 +414,38 @@ ImagePlatformKWin::ImagePlatformKWin(QObject *parent)
     updateSupportedGrabModes();
     connect(qGuiApp, &QGuiApplication::screenAdded, this, &ImagePlatformKWin::updateSupportedGrabModes);
     connect(qGuiApp, &QGuiApplication::screenRemoved, this, &ImagePlatformKWin::updateSupportedGrabModes);
+    connect(qGuiApp, &QGuiApplication::screenAdded, this, &ImagePlatformKWin::updateStereoOutputs);
+    connect(qGuiApp, &QGuiApplication::screenRemoved, this, &ImagePlatformKWin::updateStereoOutputs);
+    updateStereoOutputs();
+}
+
+void ImagePlatformKWin::updateStereoOutputs()
+{
+    bool active = m_capturedStereo;
+#ifdef StereoLayer_FOUND
+    const auto screens = qGuiApp->screens();
+    auto modes = findChildren<Stereo::ScreenMode *>(Qt::FindDirectChildrenOnly);
+    for (auto screen : screens) {
+        auto found = std::find_if(modes.cbegin(), modes.cend(), [screen](auto mode) {
+            return mode->screen() == screen;
+        });
+        if (found == modes.cend()) {
+            auto mode = new Stereo::ScreenMode(this);
+            mode->setScreen(screen);
+            connect(mode, &Stereo::ScreenMode::modeChanged, this, &ImagePlatformKWin::updateStereoOutputs);
+            modes.append(mode);
+        }
+    }
+    for (auto mode : modes) {
+        if (!screens.contains(mode->screen())) {
+            mode->deleteLater();
+        } else if (mode->mode() == Stereo::OutputMode::Stereo || mode->mode() == Stereo::OutputMode::Anaglyph) {
+            active = true;
+        }
+    }
+#endif
+    setStereoActive(active);
+    updateSupportedGrabModes();
 }
 
 ImagePlatform::GrabModes ImagePlatformKWin::supportedGrabModes() const
@@ -422,6 +459,16 @@ void ImagePlatformKWin::updateSupportedGrabModes()
 
     if (m_apiVersion >= 2) {
         grabModes |= GrabMode::ActiveWindow;
+        if (stereoActive()) {
+            grabModes |= GrabMode::CurrentScreen;
+        }
+#ifdef StereoLayer_FOUND
+        grabModes |= GrabMode::AllScreensStereo | GrabMode::CurrentScreenStereo;
+#else
+        if (m_capturedStereo) {
+            grabModes |= GrabMode::AllScreensStereo | GrabMode::CurrentScreenStereo;
+        }
+#endif
     }
 
     if (QGuiApplication::screens().count() > 1) {
@@ -458,11 +505,17 @@ void ImagePlatformKWin::doGrab(ShutterMode,
 
     switch (grabMode) {
     case GrabMode::AllScreens:
-        takeScreenShotWorkspace(flags);
+    case GrabMode::AllScreensStereo:
+        if (m_apiVersion >= 2) {
+            takeMonitorScreenShots(flags, false, grabMode == GrabMode::AllScreensStereo);
+        } else {
+            takeScreenShotWorkspace(flags);
+        }
         break;
     case GrabMode::CurrentScreen:
+    case GrabMode::CurrentScreenStereo:
         if (m_apiVersion >= 2) {
-            takeScreenShotActiveScreen(flags);
+            takeMonitorScreenShots(flags, true, grabMode == GrabMode::CurrentScreenStereo);
         } else {
             takeScreenShotInteractive(InteractiveKind::Screen, flags);
         }
@@ -484,6 +537,43 @@ void ImagePlatformKWin::doGrab(ShutterMode,
         Q_EMIT newScreenshotFailed();
         break;
     }
+}
+
+void ImagePlatformKWin::takeMonitorScreenShots(ScreenShotFlags flags, bool currentScreen, bool stereo)
+{
+    QList<ScreenShotSource2 *> sources{new ScreenShotSourceActiveScreen2(flags)};
+    for (auto screen : qGuiApp->screens()) {
+        sources.append(new ScreenShotSourceScreen2(screen, flags));
+    }
+    auto source = new ScreenShotSourceMeta2(sources);
+    connect(source, &ScreenShotSourceMeta2::finished, this, [this, source, currentScreen, stereo](const QList<ResultVariant> &results) {
+        source->deleteLater();
+        QList<QImage> images;
+        for (const auto &result : results) {
+            if (result.index() != ResultVariant::Image) {
+                if (result.index() == ResultVariant::ErrorString) {
+                    Q_EMIT newScreenshotFailed(std::get<QString>(result));
+                } else {
+                    Q_EMIT newScreenshotCanceled();
+                }
+                return;
+            }
+            images.append(std::get<QImage>(result));
+        }
+        const auto current = images.takeFirst();
+        for (auto &image : images) {
+            if (ImageMetaData::screen(image) == ImageMetaData::screen(current)) {
+                image = current;
+            }
+        }
+        m_capturedStereo = std::any_of(images.cbegin(), images.cend(), ImageMetaData::isStereo);
+        updateStereoOutputs();
+        if (stereo || m_capturedStereo || stereoActive()) {
+            Q_EMIT monitorScreenshotTaken(images, current);
+        } else {
+            Q_EMIT newScreenshotTaken(currentScreen ? current : combinedImage(images));
+        }
+    });
 }
 
 void ImagePlatformKWin::trackSource(ScreenShotSource2 *source)
@@ -519,8 +609,8 @@ void ImagePlatformKWin::trackSource(ScreenShotSourceMeta2 *source, OutputSignal 
 
         if (!images.empty()) {
             auto image = combinedImage(images);
-            if (ordinaryWorkspace) {
-                ImageMetaData::setStereo(image, false);
+            if ((ordinaryWorkspace || images.size() > 1) && std::any_of(images.cbegin(), images.cend(), ImageMetaData::isStereo)) {
+                ImageMetaData::setMonitorPanorama(image);
             }
             Q_EMIT (this->*outputSignal)(image);
         }
