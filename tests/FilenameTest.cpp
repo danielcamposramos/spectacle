@@ -2,15 +2,22 @@
  *  SPDX-License-Identifier: GPL-2.0-only OR LGPL-2.0-only OR LicenseRef-KDE-Accepted-GPL
  */
 
+#include <KSystemClipboard>
+#include <QApplication>
+#include <QBuffer>
+#include <QClipboard>
 #include <QDir>
 #include <QFile>
-#include <QBuffer>
-#include <QLocale>
 #include <QImage>
 #include <QImageReader>
 #include <QImageWriter>
+#include <QLocale>
+#include <QMimeData>
 #include <QMimeDatabase>
 #include <QPainter>
+#include <QSignalSpy>
+#include <QStandardPaths>
+#include <QTemporaryDir>
 #include <QTest>
 #include <QUuid>
 
@@ -38,6 +45,15 @@ private Q_SLOTS:
     void testCombined();
     void testStereoMimeTypes();
     void testStereoFormatMapping();
+    void testExplicitMonoFormat();
+    void testMonoWriter_data();
+    void testMonoWriter();
+    void testExplicitSavePath_data();
+    void testExplicitSavePath();
+    void testTempSaveEyeChange();
+    void testClipboardEye_data();
+    void testClipboardEye();
+    void testWriterError();
     void testJpsPluginWriter();
     void testMpoPluginWriter();
     void testFlatWriter();
@@ -45,6 +61,7 @@ private Q_SLOTS:
 
 void FilenameTest::initTestCase()
 {
+    QStandardPaths::setTestModeEnabled(true);
     mExportManager = ExportManager::instance();
     timestamp = QDateTime::fromString(u"2019-03-22T20:43:25Z"_s, Qt::ISODate);
     mExportManager->setTimestamp(timestamp);
@@ -193,14 +210,154 @@ void FilenameTest::testStereoFormatMapping()
     mExportManager->m_saveImage = stereoTestImage();
 
     Settings::setPreferredImageFormat(u"JPG"_s);
-    QCOMPARE(mExportManager->imageFileSuffix({}), u"jps"_s);
+    QCOMPARE(mExportManager->imageFileSuffix({}), u"jpg"_s);
     Settings::setPreferredImageFormat(u"PNG"_s);
-    QCOMPARE(mExportManager->imageFileSuffix({}), u"mpo"_s);
+    QCOMPARE(mExportManager->imageFileSuffix({}), u"png"_s);
 
     ImageMetaData::setStereo(mExportManager->m_saveImage, false);
     Settings::setPreferredImageFormat(u"JPG"_s);
     QCOMPARE(mExportManager->imageFileSuffix({}), u"jpg"_s);
     Settings::setPreferredImageFormat(previousFormat);
+}
+
+void FilenameTest::testExplicitMonoFormat()
+{
+    mExportManager->setImage(stereoTestImage());
+    for (const auto &suffix : {u"bmp"_s, u"png"_s, u"jpg"_s, u"webp"_s}) {
+        QCOMPARE(mExportManager->imageFileSuffix(QUrl(u"file:///tmp/explicit."_s + suffix)), suffix);
+    }
+}
+
+void FilenameTest::testMonoWriter_data()
+{
+    QTest::addColumn<QByteArray>("suffix");
+    QTest::addColumn<bool>("rightEye");
+    QTest::addColumn<qreal>("dpr");
+    for (const auto &suffix : {QByteArray("png"), QByteArray("bmp"), QByteArray("jpg"), QByteArray("webp")}) {
+        if (!QImageWriter::supportedImageFormats().contains(suffix)) {
+            continue;
+        }
+        for (bool right : {false, true}) {
+            for (qreal dpr : {1.0, 1.5, 2.0}) {
+                QTest::newRow(qPrintable(QString::fromLatin1(suffix) + QString::number(right) + u'-' + QString::number(dpr))) << suffix << right << dpr;
+            }
+        }
+    }
+}
+
+void FilenameTest::testMonoWriter()
+{
+    QFETCH(QByteArray, suffix);
+    QFETCH(bool, rightEye);
+    QFETCH(qreal, dpr);
+    Settings::setStereoExportEye(rightEye ? Settings::RightEye : Settings::LeftEye);
+    auto image = stereoTestImage();
+    image.setDevicePixelRatio(dpr);
+    image.setText(u"Stereo3DLayout"_s, u"sideBySideLeftFirst"_s);
+    image.setText(u"X-KDE::Stereo3DLayout"_s, u"sideBySideLeftFirst"_s);
+    mExportManager->setImage(image);
+    QBuffer output;
+    QVERIFY(output.open(QIODevice::WriteOnly));
+    QVERIFY(mExportManager->writeImage(&output, suffix));
+    const auto result = QImage::fromData(output.buffer(), suffix.constData());
+    QCOMPARE(result.size(), QSize(4, 2));
+    verifyEyeColor(result, rightEye ? Qt::blue : Qt::red);
+    for (const auto &key : {ImageMetaData::Keys::stereo, u"Stereo3DLayout"_s, u"X-KDE::Stereo3DLayout"_s}) {
+        QVERIFY(!result.textKeys().contains(key));
+        QVERIFY(!mExportManager->imageForExport(suffix).textKeys().contains(key));
+    }
+    if (suffix == "png" || suffix == "bmp") {
+        auto expected = image.copy(rightEye ? 4 : 0, 0, 4, 2);
+        expected.setDevicePixelRatio(1);
+        QCOMPARE(result, expected);
+    }
+    QCOMPARE(mExportManager->imageForExport(suffix).devicePixelRatio(), dpr);
+    QCOMPARE(mExportManager->image(), image);
+    Settings::setStereoExportEye(Settings::LeftEye);
+}
+
+void FilenameTest::testExplicitSavePath_data()
+{
+    QTest::addColumn<QString>("suffix");
+    for (const auto &suffix : {"png", "bmp", "jpg", "webp", "mpo", "jps"}) {
+        if (QImageWriter::supportedImageFormats().contains(suffix)) {
+            QTest::newRow(suffix) << QString::fromLatin1(suffix);
+        }
+    }
+}
+
+void FilenameTest::testExplicitSavePath()
+{
+    QFETCH(QString, suffix);
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    mExportManager->setImage(stereoTestImage());
+    const auto url = QUrl::fromLocalFile(dir.filePath(u"explicit."_s + suffix));
+    QSignalSpy exported(mExportManager, &ExportManager::imageExported);
+    mExportManager->exportImage(ExportManager::Save, url);
+    QCOMPARE(exported.count(), 1);
+    QCOMPARE(exported.constFirst().at(1).toUrl(), url);
+    QCOMPARE(Settings::lastImageSaveLocation(), url);
+    QVERIFY(QFile::exists(url.toLocalFile()));
+    QCOMPARE(QDir(dir.path()).entryList(QDir::Files).size(), 1);
+    if (suffix != u"mpo" && suffix != u"jps") {
+        QCOMPARE(QImage(url.toLocalFile()).size(), QSize(4, 2));
+    }
+}
+
+void FilenameTest::testTempSaveEyeChange()
+{
+    const auto previousFormat = Settings::preferredImageFormat();
+    Settings::setPreferredImageFormat(u"PNG"_s);
+    Settings::setStereoExportEye(Settings::LeftEye);
+    mExportManager->setImage(stereoTestImage());
+    const auto left = mExportManager->tempSave();
+    QVERIFY(left.isLocalFile());
+    QCOMPARE(QImage(left.toLocalFile()).pixelColor(2, 1), QColor(Qt::red));
+    Settings::setStereoExportEye(Settings::RightEye);
+    QVERIFY(!QFile::exists(left.toLocalFile()));
+    const auto right = mExportManager->tempSave();
+    QVERIFY(right != left);
+    QCOMPARE(QImage(right.toLocalFile()).pixelColor(2, 1), QColor(Qt::blue));
+    QCOMPARE(QImage(right.toLocalFile()).size(), QSize(4, 2));
+    Settings::setStereoExportEye(Settings::LeftEye);
+    Settings::setPreferredImageFormat(previousFormat);
+}
+
+void FilenameTest::testClipboardEye_data()
+{
+    QTest::addColumn<bool>("rightEye");
+    QTest::newRow("left") << false;
+    QTest::newRow("right") << true;
+}
+
+void FilenameTest::testClipboardEye()
+{
+    QFETCH(bool, rightEye);
+    const auto previousFormat = Settings::preferredImageFormat();
+    Settings::setPreferredImageFormat(u"PNG"_s);
+    Settings::setStereoExportEye(rightEye ? Settings::RightEye : Settings::LeftEye);
+    mExportManager->setImage(stereoTestImage());
+    mExportManager->exportImage(ExportManager::CopyImage);
+    const auto data = KSystemClipboard::instance()->mimeData(QClipboard::Clipboard);
+    QVERIFY(data);
+    const auto encoded = QImage::fromData(data->data(u"image/png"_s), "png");
+    QCOMPARE(encoded.size(), QSize(4, 2));
+    QCOMPARE(encoded.pixelColor(2, 1), QColor(rightEye ? Qt::blue : Qt::red));
+    QCOMPARE(qvariant_cast<QImage>(data->imageData()), encoded);
+    QVERIFY(!encoded.textKeys().contains(ImageMetaData::Keys::stereo));
+    Settings::setStereoExportEye(Settings::LeftEye);
+    Settings::setPreferredImageFormat(previousFormat);
+}
+
+void FilenameTest::testWriterError()
+{
+    mExportManager->setImage(stereoTestImage());
+    QBuffer output;
+    QVERIFY(output.open(QIODevice::WriteOnly));
+    QSignalSpy errors(mExportManager, &ExportManager::errorMessage);
+    QVERIFY(!mExportManager->writeImage(&output, "unsupported-format"));
+    QCOMPARE(errors.count(), 1);
 }
 
 void FilenameTest::testJpsPluginWriter()
@@ -267,6 +424,6 @@ void FilenameTest::testFlatWriter()
     QCOMPARE(QImage::fromData(output.buffer(), "png"), image);
 }
 
-QTEST_GUILESS_MAIN(FilenameTest)
+QTEST_MAIN(FilenameTest)
 
 #include "FilenameTest.moc"

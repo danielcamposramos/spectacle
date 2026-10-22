@@ -13,6 +13,7 @@
 #include <QApplication>
 #include <QBuffer>
 #include <QClipboard>
+#include <QColorSpace>
 #include <QDataStream>
 #include <QDir>
 #include <QFileDialog>
@@ -29,8 +30,8 @@
 #include <QString>
 #include <QTemporaryDir>
 #include <QTemporaryFile>
-#include <QtConcurrent/QtConcurrentRun>
 #include <QTimer>
+#include <QtConcurrent/QtConcurrentRun>
 
 #include <KIO/DeleteJob>
 #include <KIO/FileCopyJob>
@@ -51,6 +52,9 @@ ExportManager::ExportManager(QObject *parent)
     , m_saveImage(QImage())
     , m_tempFile(QUrl())
 {
+    connect(Settings::self(), &Settings::stereoExportEyeChanged, this, [this] {
+        setImage(m_saveImage);
+    });
     connect(this, &ExportManager::imageExported, this, [](Actions actions, const QUrl &url) {
         if (actions & AnySave) {
             Settings::setLastImageSaveLocation(url);
@@ -407,12 +411,6 @@ QString ExportManager::imageFileSuffix(const QUrl &url) const
         type = Settings::preferredImageFormat().toLower();
     }
 
-    if (ImageMetaData::isStereo(m_saveImage) && type != u"jps"_s && type != u"mpo"_s) {
-        if (type == u"jpg"_s || type == u"jpeg"_s || type == u"webp"_s || type == u"avif"_s) {
-            return u"jps"_s;
-        }
-        return u"mpo"_s;
-    }
     return type;
 }
 
@@ -451,6 +449,31 @@ QImage scaledImageFromSubGeometry(const QImage &image)
                              fastScale ? Qt::FastTransformation : Qt::SmoothTransformation);
 }
 
+QImage ExportManager::imageForExport(const QByteArray &suffix) const
+{
+    auto image = scaledImageFromSubGeometry(m_saveImage);
+    if (ImageMetaData::isStereo(image) && suffix != "jps" && suffix != "mpo") {
+        const int viewWidth = image.width() / 2;
+        const int x = Settings::stereoExportEye() == Settings::RightEye ? viewWidth : 0;
+        const auto eye = image.copy(x, 0, viewWidth, image.height());
+        // QImage::setText cannot remove keys. Copy pixels without the stereo metadata.
+        image = QImage(eye.constBits(), eye.width(), eye.height(), eye.bytesPerLine(), eye.format()).copy();
+        image.setColorTable(eye.colorTable());
+        image.setColorSpace(eye.colorSpace());
+        image.setDevicePixelRatio(eye.devicePixelRatio());
+        image.setDotsPerMeterX(eye.dotsPerMeterX());
+        image.setDotsPerMeterY(eye.dotsPerMeterY());
+        image.setOffset(eye.offset());
+        const auto keys = eye.textKeys();
+        for (const auto &key : keys) {
+            if (key != ImageMetaData::Keys::stereo && key != u"Stereo3DLayout" && key != u"X-KDE::Stereo3DLayout") {
+                image.setText(key, eye.text(key));
+            }
+        }
+    }
+    return image;
+}
+
 bool ExportManager::writeImage(QIODevice *device, const QByteArray &suffix)
 {
     // In the documentation for QImageWriter, it is a bit ambiguous what "format" means.
@@ -478,7 +501,11 @@ bool ExportManager::writeImage(QIODevice *device, const QByteArray &suffix)
     }
     // Scale image to original scale if possible.
     // This is done here because we need the highest resolution version in the rest of the app.
-    return imageWriter.write(scaledImageFromSubGeometry(m_saveImage));
+    if (!imageWriter.write(imageForExport(suffix))) {
+        Q_EMIT errorMessage(i18nc("%1 is an error message", "QImageWriter cannot write image: %1", imageWriter.errorString()));
+        return false;
+    }
+    return true;
 }
 
 bool ExportManager::localSave(const QUrl &url, const QString &suffix)
@@ -497,8 +524,7 @@ bool ExportManager::localSave(const QUrl &url, const QString &suffix)
 
     QFile outputFile(url.toLocalFile());
 
-    outputFile.open(QFile::WriteOnly);
-    if (!writeImage(&outputFile, suffix.toLatin1())) {
+    if (!outputFile.open(QFile::WriteOnly) || !writeImage(&outputFile, suffix.toLatin1())) {
         Q_EMIT errorMessage(i18n("Cannot save screenshot. Error while writing file."));
         return false;
     }
@@ -565,7 +591,7 @@ QUrl ExportManager::tempSave()
         const auto formattedFilename = this->formattedFilename(Settings::imageFilenameTemplate(), m_timestamp, ImageMetaData::windowTitle(m_saveImage), Settings::imageSaveLocation());
         const QString baseFileName = m_tempDir->path() + u'/' + QUrl::fromLocalFile(formattedFilename).fileName();
 
-        QString suffix = imageFileSuffix(QUrl(baseFileName));
+        const QString suffix = imageFileSuffix({});
         const QString fileName = autoIncrementFilename(baseFileName, suffix, &ExportManager::isTempFileAlreadyUsed);
         QFile tmpFile(fileName);
         if (tmpFile.open(QFile::WriteOnly)) {
@@ -591,24 +617,15 @@ bool ExportManager::save(const QUrl &url)
     }
 
     const QString suffix = imageFileSuffix(url);
-    QUrl saveUrl = url;
-    if (ImageMetaData::isStereo(m_saveImage)) {
-        QString path = saveUrl.path();
-        const qsizetype dot = path.lastIndexOf(u'.');
-        if (dot >= 0) {
-            path.truncate(dot);
-        }
-        saveUrl.setPath(path + u'.' + suffix);
-    }
     bool saveSucceded = false;
-    if (saveUrl.isLocalFile()) {
-        saveSucceded = localSave(saveUrl, suffix);
+    if (url.isLocalFile()) {
+        saveSucceded = localSave(url, suffix);
     } else {
-        saveSucceded = remoteSave(saveUrl, suffix);
+        saveSucceded = remoteSave(url, suffix);
     }
     if (saveSucceded) {
         m_imageSavedNotInTemp = true;
-        KRecentDocument::add(saveUrl, QGuiApplication::desktopFileName());
+        KRecentDocument::add(url, QGuiApplication::desktopFileName());
     }
     return saveSucceded;
 }
@@ -706,7 +723,7 @@ void ExportManager::exportImage(ExportManager::Actions actions, QUrl url)
         if (!url.isValid() && m_imageSavedNotInTemp) {
             url = Settings::self()->lastImageSaveLocation();
         }
-        auto data = new QMimeData();
+        auto data = std::make_unique<QMimeData>();
         const auto preferredFormat = imageFileSuffix({});
         // TODO: Maybe copy a temp file URL instead? That way we could reliably
         // paste as the preferred format without decompression. The issue with
@@ -714,16 +731,10 @@ void ExportManager::exportImage(ExportManager::Actions actions, QUrl url)
         // Flatpak even if you use KUrlMimeData::exportUrlsToPortal().
         QBuffer buffer;
         buffer.open(QIODevice::ReadWrite);
-        QImageWriter writer(&buffer, preferredFormat.toLatin1());
-        if (preferredFormat == u"mpo") {
-            // MPO stores JPEG images; use the highest quality and no chroma subsampling.
-            writer.setQuality(100);
-        } else if (preferredFormat != u"png") {
-            writer.setQuality(Settings::imageCompressionQuality());
+        if (!writeImage(&buffer, preferredFormat.toLatin1())) {
+            return;
         }
-        // We want to reuse this image to waste less CPU.
-        auto image = scaledImageFromSubGeometry(m_saveImage);
-        writer.write(image);
+        const auto image = imageForExport(preferredFormat.toLatin1());
         buffer.reset();
         // Set first so that it gets chosen first.
         data->setData(u"image/" + preferredFormat, buffer.readAll());
@@ -748,7 +759,7 @@ void ExportManager::exportImage(ExportManager::Actions actions, QUrl url)
         // "application/x-kde-suggestedfilename" is handled by KIO/PasteJob.
         // It should put a useful default filename in the paste dialog.
         data->setData(u"application/x-kde-suggestedfilename"_s, QFile::encodeName(fileName));
-        KSystemClipboard::instance()->setMimeData(data, QClipboard::Clipboard);
+        KSystemClipboard::instance()->setMimeData(data.release(), QClipboard::Clipboard);
         success = true;
     }
 

@@ -151,6 +151,7 @@ private:
     using FileNameAlreadyUsedCheck = bool (ExportManager::*)(const QUrl &) const;
     QString autoIncrementFilename(const QString &baseName, const QString &extension, FileNameAlreadyUsedCheck isFileNameUsed) const;
     QString imageFileSuffix(const QUrl &url) const;
+    QImage imageForExport(const QByteArray &suffix) const;
     bool writeImage(QIODevice *device, const QByteArray &suffix);
     bool save(const QUrl &url);
     bool localSave(const QUrl &url, const QString &suffix);

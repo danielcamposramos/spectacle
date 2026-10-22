@@ -145,6 +145,13 @@
         <min>0</min>
         <max>100</max>
     </entry>
+    <entry name="stereoExportEye" type="Enum">
+        <choices>
+            <choice name="LeftEye"/>
+            <choice name="RightEye"/>
+        </choices>
+        <default>LeftEye</default>
+    </entry>
     <entry name="preferredImageFormat" type="String">
         <!--This is a string because the available formats
         come from QImageWriter::supportedImageFormats()-->

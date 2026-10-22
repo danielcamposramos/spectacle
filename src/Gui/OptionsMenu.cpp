@@ -15,6 +15,7 @@
 #include <KLocalizedString>
 #include <KStandardActions>
 
+#include <QActionGroup>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QList>
@@ -75,6 +76,22 @@ OptionsMenu::OptionsMenu(QWidget *parent)
         QObject::connect(onlyCapturePopupAction, &QAction::toggled, Settings::self(), &Settings::setTransientOnly);
         QObject::connect(Settings::self(), &Settings::transientOnlyChanged, onlyCapturePopupAction, [onlyCapturePopupAction](){
             onlyCapturePopupAction->setChecked(Settings::transientOnly());
+        });
+    }
+
+    auto eyeMenu = addMenu(i18nc("@title:menu Eye used when exporting a stereo capture to a 2D format", "Eye for 2D Export"));
+    auto eyeGroup = new QActionGroup(eyeMenu);
+    for (const auto eye : {Settings::LeftEye, Settings::RightEye}) {
+        auto action = eyeMenu->addAction(eye == Settings::LeftEye ? i18nc("@action:inmenu Eye used for 2D export", "Left Eye")
+                                                                  : i18nc("@action:inmenu Eye used for 2D export", "Right Eye"));
+        eyeGroup->addAction(action);
+        action->setCheckable(true);
+        action->setChecked(Settings::stereoExportEye() == eye);
+        connect(action, &QAction::triggered, this, [eye] {
+            Settings::setStereoExportEye(eye);
+        });
+        connect(Settings::self(), &Settings::stereoExportEyeChanged, action, [action, eye] {
+            action->setChecked(Settings::stereoExportEye() == eye);
         });
     }
 
