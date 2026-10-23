@@ -1336,6 +1336,8 @@ void SpectacleCore::showErrorMessage(const QString &message)
 
     if (m_startMode == StartMode::Gui || m_startMode == StartMode::DBus) {
         KMessageBox::error(nullptr, message);
+    } else {
+        QCoreApplication::exit(1);
     }
 }
 
