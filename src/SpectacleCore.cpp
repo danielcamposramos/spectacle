@@ -1555,7 +1555,6 @@ void SpectacleCore::initGuiNoScreenshot()
     ViewerWindow::instance()->setVisible(true);
 }
 
-// Hurry up the sync if the sync timer is active.
 void SpectacleCore::setMonitorCaptureMode(MonitorCapture::Mode mode)
 {
     if (m_monitorCaptureMode == mode || !m_monitorCapture.supports(mode)) {
@@ -1566,6 +1565,7 @@ void SpectacleCore::setMonitorCaptureMode(MonitorCapture::Mode mode)
                                               i18nc("@info", "Changing the monitor view clears the current annotations."),
                                               i18nc("@title:window", "Change Monitor View"))
             != KMessageBox::Continue) {
+        Q_EMIT monitorCaptureChanged();
         return;
     }
     m_annotationDocument->clearAnnotations();
@@ -1577,6 +1577,7 @@ void SpectacleCore::setMonitorCaptureMode(MonitorCapture::Mode mode)
     Q_EMIT monitorCaptureChanged();
 }
 
+// Hurry up the sync if the sync timer is active.
 void SpectacleCore::syncExportImage()
 {
     if (!m_annotationSyncTimer->isActive()) {
