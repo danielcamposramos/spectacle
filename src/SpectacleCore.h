@@ -56,6 +56,7 @@ public:
     ~SpectacleCore() noexcept override;
 
     static SpectacleCore *instance();
+    int exitStatus() const { return m_exitStatus; }
 
     ImagePlatform *imagePlatform() const;
     VideoPlatform *videoPlatform() const;
@@ -201,6 +202,7 @@ private:
 
     QUrl m_editExistingUrl;
     QUrl m_outputUrl;
+    int m_exitStatus = 0;
     MonitorCapture m_monitorCapture;
     MonitorCapture::Mode m_monitorCaptureMode = MonitorCapture::AllMonitors2D;
 

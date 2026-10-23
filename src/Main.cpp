@@ -97,7 +97,8 @@ int main(int argc, char **argv)
         // fire it up
         spectacleCore->activate(app.arguments(), QDir::currentPath());
 
-        return app.exec();
+        const int result = app.exec();
+        return result ? result : spectacleCore->exitStatus();
     }
 
     // With the StartupOption::Unique flag, this process will exit during the construction of
@@ -137,5 +138,6 @@ int main(int argc, char **argv)
     // fire it up
     spectacleCore->activate(app.arguments(), QDir::currentPath());
 
-    return app.exec();
+    const int result = app.exec();
+    return result ? result : spectacleCore->exitStatus();
 }
