@@ -23,7 +23,6 @@ EmptyPage {
 
     // Used in ViewerWindow::setMode()
     readonly property real minimumWidth: Math.max(
-        header.implicitWidth,
         annotationsToolBar.implicitWidth + separator.implicitWidth + footerLoader.implicitWidth,
         480 // leave some room for content if necessary
     )
@@ -36,9 +35,15 @@ EmptyPage {
 
     header: QQC.ToolBar {
         id: header
-        contentItem: ButtonGrid {
+        contentItem: Flow {
             id: mainToolBarContents
-            animationsEnabled: true
+            spacing: Kirigami.Units.mediumSpacing
+            move: Transition {
+                NumberAnimation { properties: "x,y"; duration: Kirigami.Units.longDuration; easing.type: Easing.OutCubic }
+            }
+            add: Transition {
+                NumberAnimation { properties: "x,y"; duration: Kirigami.Units.longDuration; easing.type: Easing.OutCubic }
+            }
             AnimatedLoader {
                 state: contextWindow.annotating ? "active" : "inactive"
                 sourceComponent: UndoRedoGroup {
