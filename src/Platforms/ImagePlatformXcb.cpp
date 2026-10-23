@@ -665,6 +665,8 @@ void ImagePlatformXcb::doGrabNow(GrabMode grabMode, bool includePointer, bool in
     case GrabMode::TransientWithParent:
         grabTransientWithParent(includePointer, includeDecorations, includeShadow);
         break;
+    case GrabMode::AllScreensStereo:
+    case GrabMode::CurrentScreenStereo:
     case GrabMode::NoGrabModes:
         Q_EMIT newScreenshotFailed();
     }
